@@ -7,7 +7,8 @@ defmodule Rircheck.MixProject do
       version: "0.1.0",
       elixir: "~> 1.13",
       start_permanent: Mix.env() == :prod,
-      deps: deps()
+      deps: deps(),
+      escript: [main_module: Rircheck]
     ]
   end
 
@@ -22,6 +23,7 @@ defmodule Rircheck.MixProject do
   defp deps do
     [
       {:httpoison, "~> 1.7"},
+      {:jason, "~> 1.2"},
       {:iptrie, "~> 0.8"}
     ]
   end
