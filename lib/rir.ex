@@ -31,9 +31,8 @@ defmodule Rir do
 
   @spec get_roas(map, binary) :: map
   defp get_roas(ctx, asn) do
-    IO.inspect(ctx, label: :get_roas)
-
-    Map.get(ctx.announced, asn, [])
+    Map.get(ctx.announced, asn, %{})
+    |> Map.get(:prefixes, [])
     |> IO.inspect(label: :get_roas)
     |> Enum.reduce(ctx, fn pfx, acc -> Api.roa(acc, asn, pfx) end)
   end

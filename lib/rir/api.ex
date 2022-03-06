@@ -17,10 +17,7 @@ defmodule Rir.Api do
   @spec decode(map) :: map
   defp decode(%{data: data, call: %{name: "announced-prefixes", status: :ok}}) do
     # Announced-prefixes is a list of prefixes
-    IO.inspect(data, label: :decode)
-
-    data["prefixes"]
-    |> Enum.map(&Map.get(&1, "prefix"))
+    %{prefixes: data["prefixes"] |> Enum.map(&Map.get(&1, "prefix"))}
   end
 
   defp decode(%{data: data, call: %{name: "as-routing-consistency", status: :ok} = _call}) do
