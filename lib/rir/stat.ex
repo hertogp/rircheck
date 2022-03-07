@@ -1,11 +1,7 @@
 defmodule Rir.Stat do
   @moduledoc """
-  Functions to retrieve data collections from the [RIPEstat Data
+  Functions to call endpoints on the [RIPEstat Data
   API](https://stat.ripe.net/docs/02.data-api/).
-
-  Functions return a map that is either
-  - `%{error: code, reason: info}`, or
-  - `%{status: code, type: type, data: map}
 
   ## Them are the rules
 
@@ -18,37 +14,6 @@ defmodule Rir.Stat do
   - RIPEstat [Service Terms and
     Conditions](https://www.ripe.net/about-us/legal/ripestat-service-terms-and-conditions)
     apply
-
-  ## Output data structure
-
-  The resulting data has a key=>value structure. Each data call has its own
-  output fields, which are detailed in the individual sections. The common
-  fields that are provided by every call are:
-
-  - `status`, string, indicates the status of the result of the data call.
-        * `ok` for a successful query
-        * `error` for unsuccessful query (see messages field)
-        * `maintenance` in case the data call is undergoing maintenance.
-  - `status_code`, integer, same as the HTTP status code.
-  - `data_call_status`, string, indicates the status of the data call:
-        * `supported`, this data call is meant to be stable and without bugs.
-        * `deprecated` (usually provided with an expiration date)
-        * `development` this data call is currently work in progress
-  - `data_call_name`, string, holds the name of the data call
-  - `version`, string, major.minor version of the response layout for this call
-  - `cached`, boolean, True/False
-  - `messages`, [["info"|"error", string]], human readable message
-  - `process_time`, string, time it took to process the request (ms) or "not available"
-  - `data`, the data itself.
-
-
-  ## Data Overload Prevention
-
-  This prevention mechanism should only kick in if the request stems from a
-  browser (the referrer header set), but in case it happens for a non-browser
-  request, it can easily suppressed by adding `data_overload_limit=ignore` parameter
-
-  https://stat.ripe.net/data/<datacallname>/data.json?resource=AS3333&data_overload_limit=ignore
 
   """
 
@@ -71,13 +36,19 @@ defmodule Rir.Stat do
 
   HTTPoison.start()
 
-  def url(name, params \\ [])
+  # API
 
-  def url(name, :meta) do
-    "https://stat.ripe.net/data/#{name}/meta/methodology"
-  end
+  @doc """
+  Returns the url for the given the api endpoint `name` & the `params` (keyword list).
 
-  def url(name, params) do
+  ## Example
+
+      iex> url("announced-prefixes", resource: "1234")
+      "https://stat.ripe.net/data/announced-prefixes/data.json?resource=1234"
+
+  """
+  @spec url(binary, Keyword.t()) :: binary
+  def url(name, params \\ []) do
     params
     |> Enum.map(fn {k, v} -> "#{k}=#{v}" end)
     |> Enum.join("&")
@@ -85,11 +56,56 @@ defmodule Rir.Stat do
   end
 
   @doc """
-  Convert the result of an API call to a map.
+  Returns a map with `call` details and either a `data` field or an `error` field.
 
   The resulting map is one of:
-  - `%{call: details, data: decoded_json}`
-  - `%{call: details, error: reason}`
+  - `%{call: call, data: data}`
+  - `%{call: call, error: reason}`
+
+  `call` is a map with call details:
+
+  ```
+  %{
+    call: :supported | :deprecated | :development | :unknown
+    http: integer, # the http status code
+    info: nil | "some info msg"
+    name: "api endpoint name",
+    status: :ok | :error | :maintenance,
+    url: "api-endpoint called",
+    version: "major.minor"
+  }
+
+  ```
+
+  The `call` meanings are:
+  - `:supported`, endpoint is meant to be stable and without bugs
+  - `:deprecated`, endpoint will cease to exist at some point in time
+  - `:development`, endpoint is a WIP and might change or dissapear at any moment
+  - `:unknown`, endpoint is unknown (a locally defined status)
+
+  Strangely enough, when a non-existing endpoint is called, all `call` details
+  indicate success and `data` is an empty map.  Only the `call.info` indicates
+  that the data call does not exist.  Hence, `Rir.Stat.get/1` checks for
+  this condition and if true:
+  - sets `call` to `:unknown`
+  - sets `status` to `:error`
+  - removes the empty `data` map, and
+  - adds an `error` field, saying "unknown API endpoint"
+
+  `data` is a map whose contents depends on the api endpoint used.
+
+  `error` appears when there is some type of error:
+  - an parameter had an invalid value
+  - the endpoint does not exist
+  - the data could not be decoded
+  - the server had some internal error
+  - there were some network problems and no call was made
+
+  In the latter case, `%{call: details, error: "some description"}` is
+  returned, where the call details are limited to only these fields:
+  - `info: "error reason: <reason>"`
+  - `status: :error`
+  - `url: endpoint that could not be reached`
 
   """
   @spec get(String.t()) :: map
@@ -106,19 +122,31 @@ defmodule Rir.Stat do
         _ -> %{data: data}
       end
       |> Map.put(:call, %{
-        url: url,
-        status: status,
-        name: body["data_call_name"],
         call: to_atom(body["data_call_status"]),
-        version: body["version"],
         http: response.status_code,
-        info: msgs[:info]
+        info: msgs[:info],
+        name: body["data_call_name"],
+        status: status,
+        url: url,
+        version: body["version"]
       })
+      |> sanity_check()
     else
-      {:error, reason} -> %{error: "GET: #{reason}", url: url}
+      {:error, reason} ->
+        %{
+          call: %{
+            info: "error reason: #{reason}",
+            status: :error,
+            url: url
+          },
+          error: "GET: #{reason}"
+        }
     end
   end
 
+  # Helpers
+
+  @spec get_url(binary) :: {:ok, HTTPoison.Response.t()} | {:error, any}
   defp get_url(url) do
     case HTTPoison.get(url) do
       {:ok, response} -> {:ok, response}
@@ -126,6 +154,7 @@ defmodule Rir.Stat do
     end
   end
 
+  @spec decode_json(any) :: {:ok, term()} | {:eror, :json_decode}
   defp decode_json(body) do
     case Jason.decode(body) do
       {:ok, body} -> {:ok, body}
@@ -133,13 +162,15 @@ defmodule Rir.Stat do
     end
   end
 
-  defp get_data(map) do
-    case map["data"] do
+  @spec get_data(term()) :: {:ok, map} | {:error, :nodata}
+  defp get_data(body) do
+    case body["data"] do
       map when is_map(map) -> {:ok, map}
       _ -> {:error, :nodata}
     end
   end
 
+  @spec decode_messages(term()) :: {:ok, map}
   defp decode_messages(body) do
     msgs =
       body["messages"]
@@ -147,8 +178,25 @@ defmodule Rir.Stat do
       |> Enum.into(%{})
 
     {:ok, msgs}
+  rescue
+    _ -> {:ok, %{}}
   end
 
+  @doc """
+  Returns an atom for a known first word in given `string`, otherwise just the
+  first word.
+
+  Note: the first word is also downcased.
+
+  ## Examples
+
+      iex> to_atom("deprecated - 2022-12-31")
+      :deprecated
+
+      iex> to_atom("But don't you worry")
+      "but"
+
+  """
   @spec to_atom(String.t()) :: atom | String.t()
   def to_atom(type) do
     type =
@@ -163,12 +211,31 @@ defmodule Rir.Stat do
     end
   end
 
-  @spec get_status(map) :: {:ok, atom | binary} | {:error, atom}
-  defp get_status(map) do
-    # ok, error, maintenance
-    case map["status"] do
+  @spec get_status(term()) :: {:ok, atom | binary} | {:error, atom}
+  defp get_status(body) do
+    # ok, error or maintenance
+    case body["status"] do
       nil -> {:error, :nostatus}
       status -> {:ok, to_atom(status)}
     end
   end
+
+  @spec sanity_check(map) :: map
+  defp sanity_check(%{call: call, data: data} = result) when map_size(data) == 0 do
+    # correct the results when a non-existing API endpoint was called
+    if String.match?(call.info, ~r/data\s*call\s*does\s*not\s*exist/i) do
+      call =
+        call
+        |> Map.put(:call, :unknown)
+        |> Map.put(:status, :error)
+
+      %{call: call, error: "unknown API endpoint"}
+    else
+      result
+    end
+  end
+
+  defp sanity_check(result),
+    # ignore other conditions
+    do: result
 end
