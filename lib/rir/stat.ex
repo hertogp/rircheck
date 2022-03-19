@@ -108,11 +108,11 @@ defmodule Rir.Stat do
   - `url: endpoint that could not be reached`
 
   """
-  @spec get(String.t()) :: map
-  def get(url) do
+  @spec get(String.t(), Keyword.t()) :: map
+  def get(url, opts \\ []) do
     # get an url response and decode its data part
 
-    with {:ok, response} <- get_url(url),
+    with {:ok, response} <- get_url(url, opts),
          {:ok, body} <- decode_json(response.body),
          {:ok, data} <- get_data(body),
          {:ok, status} <- get_status(body),
@@ -146,9 +146,9 @@ defmodule Rir.Stat do
 
   # Helpers
 
-  @spec get_url(binary) :: {:ok, HTTPoison.Response.t()} | {:error, any}
-  defp get_url(url) do
-    case HTTPoison.get(url) do
+  @spec get_url(binary, Keyword.t()) :: {:ok, HTTPoison.Response.t()} | {:error, any}
+  defp get_url(url, opts) do
+    case HTTPoison.get(url, opts) do
       {:ok, response} -> {:ok, response}
       {:error, error} -> {:error, error.reason}
     end

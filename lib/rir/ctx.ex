@@ -8,10 +8,11 @@ defmodule Rir.Ctx do
 
   # Helpers
 
+  @spec to_asn(term) :: binary | RuntimeError
   defp to_asn(arg) do
     num = String.replace(arg, ~r/^AS/i, "")
-    {asn, ""} = Integer.parse(num)
-    asn
+    {_, ""} = Integer.parse(num)
+    num
   rescue
     _ -> pfx2asn(arg)
   end
@@ -19,10 +20,11 @@ defmodule Rir.Ctx do
   defp pfx2asn(pfx) do
     ctx = Api.network(%{}, pfx)
     net = ctx.network[pfx]
+    IO.inspect(net, label: :pfx2asn_net)
 
     case net[:error] do
       nil -> net.asn
-      reason -> raise "#{reason}"
+      reason -> raise ArgumentError, "#{reason}"
     end
   end
 

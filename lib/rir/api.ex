@@ -13,6 +13,9 @@ defmodule Rir.Api do
   alias Rir.Stat
 
   # Helpers
+  # todo
+  # - [ ] decoders must check the version of the reply given
+  # - [ ] decoders must check call status
 
   @spec decode(map) :: map
   defp decode(%{data: data, call: %{name: "announced-prefixes", status: :ok}}) do
@@ -37,12 +40,35 @@ defmodule Rir.Api do
   end
 
   defp decode(%{data: data, call: %{name: "as-overview", status: :ok}}) do
+    # As-overiew
     data
   end
 
+  defp decode(%{data: data, call: %{name: "bgp-state", status: :ok}}) do
+    # Bgp-state
+    data["bgp_state"]
+    |> list_tuples(["target_prefix", "path"])
+    |> Enum.map(fn {pfx, as_path} -> {pfx, Enum.take(as_path, -2) |> hd()} end)
+    |> Enum.uniq()
+    |> Enum.reduce(%{}, fn {pfx, asn}, acc ->
+      Map.update(acc, pfx, [asn], fn asns -> [asn | asns] end)
+    end)
+  end
+
   defp decode(%{data: data, call: %{name: "network-info", status: :ok}}) do
+    # Network-info
     asn = data["asns"] |> List.first()
     %{asn: asn, asns: data["asns"], prefix: data["prefix"]}
+  end
+
+  defp decode(%{data: data, call: %{name: "ris-prefixes", status: :ok}}) do
+    # Ris-prefixes
+    prefixes = data["prefixes"]
+
+    %{
+      originating: prefixes["v4"]["originating"] ++ prefixes["v6"]["originating"],
+      transiting: prefixes["v4"]["transiting"] ++ prefixes["v6"]["transiting"]
+    }
   end
 
   defp decode(%{data: data, call: %{name: "rpki-validation", status: :ok} = _call}) do
@@ -69,7 +95,6 @@ defmodule Rir.Api do
   end
 
   defp decode(%{data: _data, call: %{name: name, status: :ok} = call}),
-    # api endpoint has no decoder
     do: %{call: call, error: "missing Rir.Api.decode/2 for api endpoint #{inspect(name)}"}
 
   defp decode(%{error: reason, call: call}),
@@ -104,8 +129,8 @@ defmodule Rir.Api do
 
   @doc """
   Stores the [announced](https://stat.ripe.net/docs/02.data-api/announced-prefixes.html)
-  prefixes for given `asn`, under `ctx.announced["asn"]` as a list under
-  the `prefixes` key.
+  prefixes for given `asn`, under `ctx.announced["asn"].prefixes` as a map
+  (with only one key).
 
   ```elixir
   %{ announced: %{
@@ -154,6 +179,22 @@ defmodule Rir.Api do
   end
 
   @doc """
+  Stores the [bgp state](https://stat.ripe.net/docs/02.data-api/bgp-state.html)
+  results under the `;bgp_state` key in given `ctx` for given `resource`.
+
+  The results are processed into a map where the list of upstream neighbors seen
+  in BGP are stored under the `prefix` key.
+
+  """
+  @spec bgp_state(map, binary) :: map
+  def bgp_state(ctx, resource) do
+    Stat.url("bgp-state", resource: resource)
+    |> Stat.get()
+    |> decode()
+    |> store(ctx, :bgp_state, resource)
+  end
+
+  @doc """
   Stores the
   [as-routing-consistency](https://stat.ripe.net/docs/02.data-api/as-routing-consistency.html)
   for given `asn`, under `ctx.consistency["asn"]` as a map.
@@ -168,7 +209,7 @@ defmodule Rir.Api do
           ...
         },
         prefixes: %{
-          "prefix/len" => {bgp?, whois? ["authority", ...]},
+          "prefix/len" => {bgp?, whois?, ["authority", ...]},
           ...
         }
       }
@@ -211,6 +252,19 @@ defmodule Rir.Api do
     |> Stat.get()
     |> decode()
     |> store(ctx, :network, prefix)
+  end
+
+  @doc """
+  Stores the [ris-prefixes]() for given `asn` under `:ris_prefixes`
+  in given `ctx`.
+
+  """
+  @spec ris_prefixes(map, binary) :: map
+  def ris_prefixes(ctx, asn) do
+    Stat.url("ris-prefixes", resource: asn, list_prefixes: "true")
+    |> Stat.get()
+    |> decode()
+    |> store(ctx, :ris_prefixes, asn)
   end
 
   @doc """
