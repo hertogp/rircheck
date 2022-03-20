@@ -17,13 +17,13 @@ defmodule Rir.Api do
   # - [ ] decoders must check the version of the reply given
   # - [ ] decoders must check call status
 
-  @spec decode(map) :: map
-  defp decode(%{data: data, call: %{name: "announced-prefixes", status: :ok}}) do
+  @spec decode(tuple) :: map
+  defp decode({:ok, {%{name: "announced-prefixes", status: :ok}, data}}) do
     # Announced-prefixes is a list of prefixes
     %{prefixes: data["prefixes"] |> Enum.map(&Map.get(&1, "prefix"))}
   end
 
-  defp decode(%{data: data, call: %{name: "as-routing-consistency", status: :ok} = _call}) do
+  defp decode({:ok, {%{name: "as-routing-consistency", status: :ok}, data}}) do
     # notes
     # - irr_sources is a "-" and not a list, if the prefix is not in whois
     # AS-routing-consistency
@@ -39,12 +39,12 @@ defmodule Rir.Api do
     %{prefixes: prefixes, peers: peers}
   end
 
-  defp decode(%{data: data, call: %{name: "as-overview", status: :ok}}) do
+  defp decode({:ok, {%{name: "as-overview", status: :ok}, data}}) do
     # As-overiew
     data
   end
 
-  defp decode(%{data: data, call: %{name: "bgp-state", status: :ok}}) do
+  defp decode({:ok, {%{name: "bgp-state", status: :ok}, data}}) do
     # Bgp-state
     data["bgp_state"]
     |> list_tuples(["target_prefix", "path"])
@@ -55,13 +55,13 @@ defmodule Rir.Api do
     end)
   end
 
-  defp decode(%{data: data, call: %{name: "network-info", status: :ok}}) do
+  defp decode({:ok, {%{name: "network-info", status: :ok}, data}}) do
     # Network-info
     asn = data["asns"] |> List.first()
     %{asn: asn, asns: data["asns"], prefix: data["prefix"]}
   end
 
-  defp decode(%{data: data, call: %{name: "ris-prefixes", status: :ok}}) do
+  defp decode({:ok, {%{name: "ris-prefixes", status: :ok}, data}}) do
     # Ris-prefixes
     prefixes = data["prefixes"]
 
@@ -71,7 +71,7 @@ defmodule Rir.Api do
     }
   end
 
-  defp decode(%{data: data, call: %{name: "rpki-validation", status: :ok} = _call}) do
+  defp decode({:ok, {%{name: "rpki-validation", status: :ok}, data}}) do
     # Rpki-validation
     with status <- data["status"],
          roas <- data["validating_roas"] do
@@ -82,7 +82,7 @@ defmodule Rir.Api do
     end
   end
 
-  defp decode(%{data: data, call: %{name: "whois", status: :ok}}) do
+  defp decode({:ok, {%{name: "whois", status: :ok}, data}}) do
     # Whois
     records = Enum.map(data["records"], fn l -> list_tuples(l, ["key", "value"]) end)
     irr = Enum.map(data["irr_records"], fn l -> list_tuples(l, ["key", "value"]) end)
@@ -94,11 +94,12 @@ defmodule Rir.Api do
     }
   end
 
-  defp decode(%{data: _data, call: %{name: name, status: :ok} = call}),
+  defp decode({:ok, {%{name: name, status: :ok} = call, _data}}),
+    # Missing decode handler
     do: %{call: call, error: "missing Rir.Api.decode/2 for api endpoint #{inspect(name)}"}
 
-  defp decode(%{error: reason, call: call}),
-    # api returned an error response
+  defp decode({:error, {call, reason}}),
+    # Api Error
     do: %{error: reason, call: call}
 
   defp list_tuples(list, keys) do
@@ -221,7 +222,7 @@ defmodule Rir.Api do
   @spec consistency(map, binary) :: map
   def consistency(ctx, asn) do
     Stat.url("as-routing-consistency", resource: asn)
-    |> Stat.get()
+    |> Stat.get(retry: 4)
     |> decode()
     |> store(ctx, :consistency, asn)
   end

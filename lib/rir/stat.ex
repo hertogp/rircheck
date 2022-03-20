@@ -108,7 +108,7 @@ defmodule Rir.Stat do
   - `url: endpoint that could not be reached`
 
   """
-  @spec get(String.t(), Keyword.t()) :: map
+  @spec get(String.t(), Keyword.t()) :: {:ok, {map, map}} | {:error, {map, any}}
   def get(url, opts \\ []) do
     # get an url response and decode its data part
 
@@ -117,69 +117,36 @@ defmodule Rir.Stat do
          {:ok, data} <- get_data(body),
          {:ok, status} <- get_status(body),
          {:ok, msgs} <- decode_messages(body) do
-      case status do
-        :error -> %{error: msgs[:error]}
-        _ -> %{data: data}
-      end
-      |> Map.put(:call, %{
+      call = %{
         call: to_atom(body["data_call_status"]),
         http: response.status_code,
         info: msgs[:info],
         name: body["data_call_name"],
         status: status,
         url: url,
-        version: body["version"]
-      })
+        version: body["version"],
+        opts: opts
+      }
+
+      case status do
+        :error -> {:error, {call, msgs[:error]}}
+        _ -> {:ok, {call, data}}
+      end
       |> sanity_check()
+
+      # return: {:ok, {call, data}} or {:error, {call, reason}}
     else
       {:error, reason} ->
         %{
           call: %{
             info: "error reason: #{reason}",
             status: :error,
-            url: url
+            url: url,
+            opts: opts
           },
-          error: "GET: #{reason}"
+          error: "#{reason}"
         }
     end
-  end
-
-  # Helpers
-
-  @spec get_url(binary, Keyword.t()) :: {:ok, HTTPoison.Response.t()} | {:error, any}
-  defp get_url(url, opts) do
-    case HTTPoison.get(url, opts) do
-      {:ok, response} -> {:ok, response}
-      {:error, error} -> {:error, error.reason}
-    end
-  end
-
-  @spec decode_json(any) :: {:ok, term()} | {:eror, :json_decode}
-  defp decode_json(body) do
-    case Jason.decode(body) do
-      {:ok, body} -> {:ok, body}
-      _ -> {:error, :json_decode}
-    end
-  end
-
-  @spec get_data(term()) :: {:ok, map} | {:error, :nodata}
-  defp get_data(body) do
-    case body["data"] do
-      map when is_map(map) -> {:ok, map}
-      _ -> {:error, :nodata}
-    end
-  end
-
-  @spec decode_messages(term()) :: {:ok, map}
-  defp decode_messages(body) do
-    msgs =
-      body["messages"]
-      |> Enum.map(fn [type, msg] -> {to_atom(type), msg} end)
-      |> Enum.into(%{})
-
-    {:ok, msgs}
-  rescue
-    _ -> {:ok, %{}}
   end
 
   @doc """
@@ -211,6 +178,62 @@ defmodule Rir.Stat do
     end
   end
 
+  # Helpers
+
+  @spec get_url(binary, Keyword.t()) :: {:ok, HTTPoison.Response.t()} | {:error, any}
+  defp get_url(url, opts) do
+    case HTTPoison.get(url, [], opts) do
+      {:ok, response} ->
+        {:ok, response}
+
+      {:error, %HTTPoison.Error{reason: :timeout}} ->
+        retry(url, opts)
+
+      {:error, error} ->
+        IO.inspect(error, label: :error)
+        {:error, error.reason}
+    end
+  end
+
+  defp retry(url, opts) do
+    n = Keyword.get(opts, :retry, 0)
+    t = Keyword.get(opts, :recv_timeout, 5000) * 2
+    IO.inspect("[retry][timeout] #{url}, #{n} attempts left, recv_timeout: #{t} ms")
+
+    case n do
+      0 -> {:error, :timeout}
+      n -> get_url(url, Keyword.merge(opts, retry: n - 1, recv_timeout: t))
+    end
+  end
+
+  @spec decode_json(any) :: {:ok, term()} | {:eror, :json_decode}
+  defp decode_json(body) do
+    case Jason.decode(body) do
+      {:ok, body} -> {:ok, body}
+      _ -> {:error, :json_decode}
+    end
+  end
+
+  @spec get_data(term()) :: {:ok, map} | {:error, :nodata}
+  defp get_data(body) do
+    case body["data"] do
+      map when is_map(map) -> {:ok, map}
+      _ -> {:error, :nodata}
+    end
+  end
+
+  @spec decode_messages(term()) :: {:ok, map}
+  defp decode_messages(body) do
+    msgs =
+      body["messages"]
+      |> Enum.map(fn [type, msg] -> {to_atom(type), msg} end)
+      |> Enum.into(%{})
+
+    {:ok, msgs}
+  rescue
+    _ -> {:ok, %{}}
+  end
+
   @spec get_status(term()) :: {:ok, atom | binary} | {:error, atom}
   defp get_status(body) do
     # ok, error or maintenance
@@ -220,8 +243,8 @@ defmodule Rir.Stat do
     end
   end
 
-  @spec sanity_check(map) :: map
-  defp sanity_check(%{call: call, data: data} = result) when map_size(data) == 0 do
+  @spec sanity_check(tuple) :: {:ok, {map, map}} | {:error, {map, any}}
+  defp sanity_check({:ok, {call, data}} = result) when map_size(data) == 0 do
     # correct the results when a non-existing API endpoint was called
     if String.match?(call.info, ~r/data\s*call\s*does\s*not\s*exist/i) do
       call =
@@ -229,11 +252,14 @@ defmodule Rir.Stat do
         |> Map.put(:call, :unknown)
         |> Map.put(:status, :error)
 
-      %{call: call, error: "unknown API endpoint"}
+      {:error, {call, "unknown API endpoint"}}
     else
       result
     end
   end
+
+  defp sanity_check({:error, reason}),
+    do: {:error, reason}
 
   defp sanity_check(result),
     # ignore other conditions
